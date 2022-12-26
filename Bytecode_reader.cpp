@@ -1,7 +1,7 @@
 #include <iostream>
 #include <fstream>
 #include <string>
-#iclude "../PLTools/Lama/blob/1.10/byterun/byterun.c"
+#include "../PLTools/Lama/blob/1.10/byterun/byterun.c"
 
 using namespace std;
 
