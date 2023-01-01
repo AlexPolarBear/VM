@@ -25,6 +25,30 @@ typedef struct {
   char  buffer[0];               
 } bytefile;
 
+struct bytecode {
+    char* begin;
+    size_t length;
+
+    bytecode(char* bytecode_begin, size_t bytecode_length) {
+        begin = bytecode_begin;
+        length = bytecode_length;
+    }
+};
+
+bool operator==(const bytecode& lhs, const bytecode& rhs) {
+    if (lhs.length != rhs.length)
+        return false;
+
+    for (int i = 0; i < lhs.length; ++i) {
+        if (*(lhs.begin + i) != *(rhs.begin + i))
+            return false;
+    }
+    return true;
+} 
+
+
+
+
 /* Gets a string from a string table by an index */
 char* get_string (bytefile *f, int pos) {
   return &f->string_ptr[pos];
@@ -77,14 +101,14 @@ bytefile* read_file (char *fname) {
 }
 
 
-std::map<std::string, int> analyze_bytecodes(bytefile *bf)
+std::vector<std::pair<bytecode, int>> analyze_bytecodes(bytefile *bf)
 {
 # define INT    (ip += sizeof (int), *(int*)(ip - sizeof (int)))
 # define BYTE   *ip++
 # define STRING get_string (bf, INT)
 # define FAIL   throw  std::runtime_error("ERROR: invalid opcode")
 
-  std::map<std::string, int> bytecode2count;
+  std::vector<std::pair<bytecode, int>> bytecode2count;
   
   char *ip     = bf->code_ptr;
   char* old_ip = ip;
@@ -284,10 +308,18 @@ std::map<std::string, int> analyze_bytecodes(bytefile *bf)
       FAIL;
     }
     size_t length = ip - old_ip;
-    char* temp = new char[length + 1];
-    memcpy(temp, old_ip, length);
-    temp[length] = '\0';
-    bytecode2count[std::string(temp)] += 1;
+    bytecode b = bytecode(old_ip, length);
+    bool added = false;
+    for (int i = 0; i < bytecode2count.size(); ++i) {
+        if (bytecode2count[i].first == b) {
+            bytecode2count[i].second++;
+            added = true;
+            break;
+        }
+    }
+    if (!added) {
+        bytecode2count.push_back({b, 1});
+    }
     old_ip = ip;
   }
   while (1);
@@ -295,25 +327,219 @@ std::map<std::string, int> analyze_bytecodes(bytefile *bf)
 
 }
 
-void print_results(std::map<std::string, int>& m)
-{
-    std::vector<std::pair<int, std::string>> v;
-    for (auto it = m.begin(); it != m.end(); ++it)
-        v.push_back({it->second, it->first});
+void print_bytecode(FILE *f,const bytecode& b, bytefile* bf) {
+  
+# define INT    (ip += sizeof (int), *(int*)(ip - sizeof (int)))
+# define BYTE   *ip++
+# define STRING get_string (bf, INT)
+# define FAIL   throw  std::runtime_error("ERROR: invalid opcode")
+  
+  char *ip     = b.begin;
+  const char *ops [] = {"+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!=", "&&", "!!"};
+  const char *pats[] = {"=str", "#string", "#array", "#sexp", "#ref", "#val", "#fun"};
+  const char *lds [] = {"LD", "LDA", "ST"};
+    char x = BYTE,
+         h = (x & 0xF0) >> 4,
+         l = x & 0x0F;
+    
+    switch (h) {
+    case 15:
+      goto stop;
+      
+    /* BINOP */
+    case 0:
+      fprintf (f, "BINOP\t%s", ops[l-1]);
+      break;
+      
+    case 1:
+      switch (l) {
+      case  0:
+        fprintf (f, "CONST\t%d", INT);
+        break;
+        
+      case  1:
+        fprintf (f, "STRING\t%s", STRING);
+        break;
+          
+      case  2:
+        fprintf (f, "SEXP\t%s ", STRING);
+        fprintf (f, "%d", INT);
+        break;
+        
+      case  3:
+        fprintf (f, "STI");
+        break;
+        
+      case  4:
+        fprintf (f, "STA");
+        break;
+        
+      case  5:
+        fprintf (f, "JMP\t0x%.8x", INT);
+        break;
+        
+      case  6:
+        fprintf (f, "END");
+        break;
+        
+      case  7:
+        fprintf (f, "RET");
+        break;
+        
+      case  8:
+        fprintf (f, "DROP");
+        break;
+        
+      case  9:
+        fprintf (f, "DUP");
+        break;
+        
+      case 10:
+        fprintf (f, "SWAP");
+        break;
 
-    std::sort(v.begin(), v.end());
+      case 11:
+        fprintf (f, "ELEM");
+        break;
+        
+      default:
+        FAIL;
+      }
+      break;
+      
+    case 2:
+    case 3:
+    case 4:
+      fprintf (f, "%s\t", lds[h-2]);
+      switch (l) {
+      case 0: fprintf (f, "G(%d)", INT); break;
+      case 1: fprintf (f, "L(%d)", INT); break;
+      case 2: fprintf (f, "A(%d)", INT); break;
+      case 3: fprintf (f, "C(%d)", INT); break;
+      default: FAIL;
+      }
+      break;
+      
+    case 5:
+      switch (l) {
+      case  0:
+        fprintf (f, "CJMPz\t0x%.8x", INT);
+        break;
+        
+      case  1:
+        fprintf (f, "CJMPnz\t0x%.8x", INT);
+        break;
+        
+      case  2:
+        fprintf (f, "BEGIN\t%d ", INT);
+        fprintf (f, "%d", INT);
+        break;
+        
+      case  3:
+        fprintf (f, "CBEGIN\t%d ", INT);
+        fprintf (f, "%d", INT);
+        break;
+        
+      case  4:
+        fprintf (f, "CLOSURE\t0x%.8x", INT);
+        {int n = INT;
+         for (int i = 0; i<n; i++) {
+         switch (BYTE) {
+           case 0: fprintf (f, "G(%d)", INT); break;
+           case 1: fprintf (f, "L(%d)", INT); break;
+           case 2: fprintf (f, "A(%d)", INT); break;
+           case 3: fprintf (f, "C(%d)", INT); break;
+           default: FAIL;
+         }
+         }
+        };
+        break;
+          
+      case  5:
+        fprintf (f, "CALLC\t%d", INT);
+        break;
+        
+      case  6:
+        fprintf (f, "CALL\t0x%.8x ", INT);
+        fprintf (f, "%d", INT);
+        break;
+        
+      case  7:
+        fprintf (f, "TAG\t%s ", STRING);
+        fprintf (f, "%d", INT);
+        break;
+        
+      case  8:
+        fprintf (f, "ARRAY\t%d", INT);
+        break;
+        
+      case  9:
+        fprintf (f, "FAIL\t%d", INT);
+        fprintf (f, "%d", INT);
+        break;
+        
+      case 10:
+        fprintf (f, "LINE\t%d", INT);
+        break;
+
+      default:
+        FAIL;
+      }
+      break;
+      
+    case 6:
+      fprintf (f, "PATT\t%s", pats[l]);
+      break;
+
+    case 7: {
+      switch (l) {
+      case 0:
+        fprintf (f, "CALL\tLread");
+        break;
+        
+      case 1:
+        fprintf (f, "CALL\tLwrite");
+        break;
+
+      case 2:
+        fprintf (f, "CALL\tLlength");
+        break;
+
+      case 3:
+        fprintf (f, "CALL\tLstring");
+        break;
+
+      case 4:
+        fprintf (f, "CALL\tBarray\t%d", INT);
+        break;
+
+      default:
+        FAIL;
+      }
+    }
+    break;
+      
+    default:
+      FAIL;
+    }
+
+    fprintf (f, "\n");
+    stop:;
+}
+
+
+void print_results(std::vector<std::pair<bytecode, int>>& v, bytefile* bf)
+{
+    std::sort(v.begin(), v.end(),
+              [](const std::pair<bytecode, int>& lhs, const std::pair<bytecode, int>& rhs)
+              {
+                return lhs.second < rhs.second;
+              });
 
     for (int i = 0; i < v.size(); ++i)
     {
-        for (int j = 0; j < v[i].second.size(); ++j)
-        {
-            char x = v[i].second[j];
-            char h = (x & 0xF0) >> 4,
-                     l = x & 0x0F;
-            std::cout << std::hex << (int)h << (int)l;
-        }
-        std::cout << " ";
-        std::cout << std::dec << v[i].first << "\n";
+        std::cout << v[i].second << "\t";
+        print_bytecode(stdout, v[i].first, bf);
     }
 }
 
@@ -321,6 +547,6 @@ void print_results(std::map<std::string, int>& m)
 int main (int argc, char* argv[]) {
   bytefile *f = read_file (argv[1]);
   auto m = analyze_bytecodes(f);
-  print_results(m);
+  print_results(m, f);
   return 0;
 }
